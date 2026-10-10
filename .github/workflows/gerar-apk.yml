@@ -8,7 +8,7 @@ permissions:
 
 jobs:
   compilar:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
@@ -34,14 +34,48 @@ jobs:
         with:
           distribution: temurin
           java-version: '21'
-      - uses: android-actions/setup-android@v3
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.11.1'
-      - name: Instalar SDK Android
-        run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
+      - name: Usar SDK Android do servidor
+        shell: bash
+        run: |
+          mm_sdk_dir="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          if [ ! -d "$mm_sdk_dir" ]; then
+            echo "SDK Android não encontrado no servidor: $mm_sdk_dir" >&2
+            exit 1
+          fi
+          printf 'ANDROID_HOME=%s\nANDROID_SDK_ROOT=%s\n' "$mm_sdk_dir" "$mm_sdk_dir" >> "$GITHUB_ENV"
+          printf '%s\n' "$mm_sdk_dir/platform-tools" >> "$GITHUB_PATH"
+          printf 'sdk.dir=%s\n' "$mm_sdk_dir" > meu-mercado/local.properties
+          if [ -f "$mm_sdk_dir/platforms/android-35/android.jar" ] && [ -x "$mm_sdk_dir/build-tools/35.0.0/aapt2" ]; then
+            echo "SDK 35 e Build Tools 35.0.0 já instalados."
+            exit 0
+          fi
+          mm_sdk_manager="$mm_sdk_dir/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$mm_sdk_manager" ]; then
+            mm_sdk_manager=""
+            for mm_candidate in "$mm_sdk_dir"/cmdline-tools/*/bin/sdkmanager; do
+              if [ -x "$mm_candidate" ]; then mm_sdk_manager="$mm_candidate"; fi
+            done
+          fi
+          if [ -z "$mm_sdk_manager" ]; then
+            echo "sdkmanager não encontrado no SDK do servidor." >&2
+            exit 1
+          fi
+          echo "Instalando somente os componentes que faltam..."
+          set +e
+          yes | "$mm_sdk_manager" --sdk_root="$mm_sdk_dir" 'platforms;android-35' 'build-tools;35.0.0'
+          mm_install_status=${PIPESTATUS[1]}
+          set -e
+          if [ "$mm_install_status" -ne 0 ]; then
+            echo "Falha ao instalar componentes do SDK (código $mm_install_status)." >&2
+            exit "$mm_install_status"
+          fi
+          test -f "$mm_sdk_dir/platforms/android-35/android.jar"
+          test -x "$mm_sdk_dir/build-tools/35.0.0/aapt2"
       - name: Testar e compilar o APK
-        run: gradle --project-dir meu-mercado :domain:test :app:testDebugUnitTest :app:assembleDebug --stacktrace
+        run: gradle --project-dir meu-mercado :domain:test :app:testDebugUnitTest :app:assembleDebug --stacktrace --max-workers=2
       - name: Disponibilizar APK para download
         uses: actions/upload-artifact@v4
         with:
@@ -59,4 +93,3 @@ jobs:
             meu-mercado/app/build/reports/
           if-no-files-found: ignore
           retention-days: 7
-          
